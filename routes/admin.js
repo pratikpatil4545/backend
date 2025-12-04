@@ -21,9 +21,9 @@ router.post('/album', async (req, res) => {
   try {
     const album = new Album(req.body);
     await album.save();
-    
+
     await Artist.findByIdAndUpdate(album.artist, { $push: { albums: album._id } });
-    
+
     res.json(album);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -35,9 +35,9 @@ router.post('/track', async (req, res) => {
   try {
     const track = new Track(req.body);
     await track.save();
-    
+
     await Album.findByIdAndUpdate(track.album, { $push: { tracks: track._id } });
-    
+
     res.json(track);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -54,6 +54,130 @@ router.post('/video', async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 });
+
+// ANALYTICS DASHBOARD
+router.get('/analytics', async (req, res) => {
+  try {
+    const totalSales = await Order.aggregate([
+      { $match: { paymentStatus: 'paid' } },
+      { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } }
+    ]);
+
+    const topAlbums = await Album.find()
+      .sort({ popular: -1 })
+      .limit(10)
+      .populate('artist');
+
+    const topArtists = await Artist.aggregate([
+      { $lookup: { from: 'albums', localField: '_id', foreignField: 'artist', as: 'albums' } },
+      { $addFields: { albumCount: { $size: '$albums' } } },
+      { $sort: { albumCount: -1 } },
+      { $limit: 10 }
+    ]);
+
+    const recentOrders = await Order.find()
+      .sort({ createdAt: -1 })
+      .limit(10);
+
+    res.json({
+      totalSales: totalSales[0] || { total: 0, count: 0 },
+      topAlbums,
+      topArtists,
+      recentOrders
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ROYALTY REPORTS (grouped by license owner)
+router.get('/royalties', async (req, res) => {
+  try {
+    const albumRoyalties = await Album.aggregate([
+      {
+        $group: {
+          _id: '$licenseOwner',
+          totalAlbums: { $sum: 1 },
+          avgPrice: { $avg: '$price' }
+        }
+      },
+      { $sort: { totalAlbums: -1 } }
+    ]);
+
+    const videoRoyalties = await Video.aggregate([
+      {
+        $group: {
+          _id: '$licenseOwner',
+          totalVideos: { $sum: 1 },
+          avgPrice: { $avg: '$price' }
+        }
+      },
+      { $sort: { totalVideos: -1 } }
+    ]);
+
+    res.json({ albums: albumRoyalties, videos: videoRoyalties });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// DVD BURN QUEUE (mock - integrate with hardware)
+router.post('/dvd/burn', async (req, res) => {
+  try {
+    const { orderId, videoId } = req.body;
+
+    // Mock DVD burning logic
+    const order = await Order.findById(orderId);
+    const video = await Video.findById(videoId);
+
+    if (!order || !video) {
+      return res.status(404).json({ message: 'Order or Video not found' });
+    }
+
+    // Simulate burn queue
+    const burnJob = {
+      jobId: 'BURN-' + Date.now(),
+      orderId,
+      videoId,
+      format: video.format,
+      status: 'queued',
+      queuePosition: Math.floor(Math.random() * 5) + 1
+    };
+
+    // In production: send to actual DVD burner API
+    setTimeout(() => {
+      console.log(`DVD burn completed for job ${burnJob.jobId}`);
+    }, 5000);
+
+    res.json(burnJob);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// FAILED SEARCH LOGGING
+const FailedSearch = require('../models/FailedSearch'); // Create this model
+
+router.post('/search/failed', async (req, res) => {
+  try {
+    const { query, timestamp } = req.body;
+    const failedSearch = new FailedSearch({ query, timestamp });
+    await failedSearch.save();
+    res.json({ message: 'Logged' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+router.get('/search/failed', async (req, res) => {
+  try {
+    const searches = await FailedSearch.find().sort({ timestamp: -1 }).limit(50);
+    res.json(searches);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 
 // MASSIVE SEED DEMO DATA
 router.post('/seed', async (req, res) => {
@@ -255,7 +379,7 @@ router.post('/seed', async (req, res) => {
         const randomTitle = songTitles[Math.floor(Math.random() * songTitles.length)] + (Math.random() > 0.7 ? ' (Remix)' : '');
         const minutes = Math.floor(Math.random() * 3) + 3;
         const seconds = Math.floor(Math.random() * 60);
-        
+
         const track = await Track.create({
           title: `${randomTitle} ${i + 1}`,
           album: album._id,
@@ -265,7 +389,7 @@ router.post('/seed', async (req, res) => {
           price: album.trackPrice,
           previewFile: `https://www.soundhelix.com/examples/mp3/SoundHelix-Song-${(i % 16) + 1}.mp3`
         });
-        
+
         albumTracks.push(track._id);
         trackCount++;
       }
@@ -279,7 +403,7 @@ router.post('/seed', async (req, res) => {
 
     // Create Videos (NO require here - already imported at top!)
     console.log('Creating videos...');
-    
+
     const videos = await Video.insertMany([
       {
         title: 'Tum Hi Ho - Official Music Video',
@@ -440,7 +564,7 @@ router.post('/seed', async (req, res) => {
 
     console.log(`Created ${videos.length} videos`);
 
-    res.json({ 
+    res.json({
       message: 'Massive demo data seeded successfully!',
       stats: {
         artists: artists.length,

@@ -59,14 +59,32 @@ router.get('/:id', async (req, res) => {
 });
 
 // Search albums
+// Smart search with text index
 router.get('/search/:query', async (req, res) => {
   try {
-    const albums = await Album.find({ 
-      title: { $regex: req.params.query, $options: 'i' } 
-    }).populate('artist').limit(10);
+    const query = req.params.query;
+    
+    // Text search on indexed fields
+    const albums = await Album.find(
+      { $text: { $search: query } },
+      { score: { $meta: 'textScore' } }
+    )
+    .sort({ score: { $meta: 'textScore' } })
+    .populate('artist')
+    .limit(20);
+
+    // Log if no results
+    if (albums.length === 0) {
+      const axios = require('axios');
+      await axios.post('http://localhost:5000/api/admin/search/failed', {
+        query,
+        timestamp: new Date()
+      }).catch(() => {});
+    }
+
     res.json(albums);
   } catch (error) {
-    console.error('Error in GET /albums/search:', error);
+    console.error('Error in GET /albums/search', error);
     res.status(500).json({ message: error.message });
   }
 });
